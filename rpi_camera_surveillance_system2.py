@@ -1,12 +1,17 @@
+# Web streaming example
+# Source code from the official PiCamera package
+# http://picamera.readthedocs.io/en/latest/recipes2.html#web-streaming
+
 import io
+
 import picamera
 import logging
 import socketserver
 import cv2
-import numpy as np
 import os
 from threading import Condition
 from http import server
+import numpy
 
 PAGE="""\
 <html>
@@ -19,7 +24,17 @@ PAGE="""\
 </body>
 </html>
 """
-
+recognizer = cv2.face.LBPHFaceRecognizer_create()
+recognizer.read('trainer/trainer.yml')
+cascadePath = "Cascade/haarcascade_frontalface_default.xml"
+faceCascade = cv2.CascadeClassifier(cascadePath);
+font = cv2.FONT_HERSHEY_SIMPLEX
+#iniciate id counter
+id = 0
+# names related to ids: example ==> Marcelo: id=1,  etc
+names = ['chen', 'Leng', 'LengTest', 'GUNN', 'GUNN', 'W']
+minW = 64
+minH = 48
 class StreamingOutput(object):
     def __init__(self):
         self.frame = None
@@ -62,11 +77,39 @@ class StreamingHandler(server.BaseHTTPRequestHandler):
                     with output.condition:
                         output.condition.wait()
                         frame = output.frame
+                    buff = numpy.frombuffer(frame, dtype=numpy.uint8)
+                    img = cv2.imdecode(buff, 1)
+
+                    #img = cv2.flip(img, -1) # Flip vertically
+                    gray = cv2.cvtColor(img,cv2.COLOR_BGR2GRAY)
+                    
+                    faces = faceCascade.detectMultiScale( 
+                        gray,
+                        scaleFactor = 1.2,
+                        minNeighbors = 5,
+                        minSize = (int(minW), int(minH)),
+                       )
+                    for(x,y,w,h) in faces:
+                        cv2.rectangle(img, (x,y), (x+w,y+h), (0,255,0), 2)
+                        id, confidence = recognizer.predict(gray[y:y+h,x:x+w])
+                        # Check if confidence is less them 100 ==> "0" is perfect match 
+                        if (confidence < 100):
+                            id = names[id]
+                            confidence = "  {0}%".format(round(100 - confidence))
+                        else:
+                            id = "unknown"
+                            confidence = "  {0}%".format(round(100 - confidence))
+                        
+                        cv2.putText(img, str(id), (x+5,y-5), font, 1, (255,255,255), 2)
+                        cv2.putText(img, str(confidence), (x+5,y+h-5), font, 1, (255,255,0), 1)
+                    
+                    new_frame = cv2.imencode('.jpeg', img)[1].tobytes()
+                    
                     self.wfile.write(b'--FRAME\r\n')
                     self.send_header('Content-Type', 'image/jpeg')
-                    self.send_header('Content-Length', len(frame))
+                    self.send_header('Content-Length', len(new_frame))
                     self.end_headers()
-                    self.wfile.write(frame)
+                    self.wfile.write(new_frame)
                     self.wfile.write(b'\r\n')
             except Exception as e:
                 logging.warning(
@@ -85,7 +128,6 @@ with picamera.PiCamera(resolution='640x480', framerate=24) as camera:
     #Uncomment the next line to change your Pi's Camera rotation (in degrees)
     camera.rotation = 180
     camera.start_recording(output, format='mjpeg')
-
     
     try:
         address = ('', 8000)
@@ -93,3 +135,4 @@ with picamera.PiCamera(resolution='640x480', framerate=24) as camera:
         server.serve_forever()
     finally:
         camera.stop_recording()
+
